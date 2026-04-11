@@ -28,6 +28,15 @@ service cloud.firestore {
     //   - timestamp: timestamp (required) - When the action occurred.
     //
     // ===============================================================
+    
+    // Collection: settings
+    // Document ID: global
+    // Fields:
+    //   - maintenanceMode: bool (required) - Whether the app is in maintenance mode.
+    //   - allowRegistration: bool (required) - Whether new users can register.
+    //   - debugLogging: bool (required) - Whether debug logging is enabled.
+    //
+    // ===============================================================
 
     // ===============================================================
     // Helper Functions
@@ -86,6 +95,14 @@ service cloud.firestore {
              data.timestamp is timestamp;
     }
 
+    function isValidAppSettings(data) {
+      return hasRequiredFields(['maintenanceMode', 'allowRegistration', 'debugLogging']) &&
+             hasOnlyAllowedFields(['maintenanceMode', 'allowRegistration', 'debugLogging']) &&
+             data.maintenanceMode is bool &&
+             data.allowRegistration is bool &&
+             data.debugLogging is bool;
+    }
+
     match /users/{userId} {
       // Users can only read their own profile, unless they are an admin
       allow read: if isOwner(userId) || isAdmin();
@@ -105,7 +122,8 @@ service cloud.firestore {
 
     match /settings/{settingId} {
       // Only admins can manage application settings
-      allow read, write: if isAdmin();
+      allow read: if isAdmin();
+      allow write: if isAdmin() && (settingId == 'global' ? isValidAppSettings(request.resource.data) : true);
     }
 
     match /audit_logs/{logId} {

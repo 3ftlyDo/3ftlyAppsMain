@@ -26,6 +26,7 @@ import {
   deleteDoc, 
   doc,
   updateDoc,
+  setDoc,
   addDoc,
   serverTimestamp,
   Timestamp 
@@ -50,6 +51,12 @@ interface AuditLog {
   timestamp: Timestamp;
 }
 
+interface AppSettings {
+  maintenanceMode: boolean;
+  allowRegistration: boolean;
+  debugLogging: boolean;
+}
+
 interface AdminDashboardProps {
   isOpen: boolean;
   onClose: () => void;
@@ -62,8 +69,15 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ isOpen, onClose 
   const [searchQuery, setSearchQuery] = useState('');
   const [isLoading, setIsLoading] = useState(true);
   const [isLoadingLogs, setIsLoadingLogs] = useState(true);
+  const [isLoadingSettings, setIsLoadingSettings] = useState(true);
+  const [isSavingSettings, setIsSavingSettings] = useState(false);
   const [userToDelete, setUserToDelete] = useState<string | null>(null);
   const [isUpdatingRole, setIsUpdatingRole] = useState<string | null>(null);
+  const [settings, setSettings] = useState<AppSettings>({
+    maintenanceMode: false,
+    allowRegistration: true,
+    debugLogging: false
+  });
 
   useEffect(() => {
     if (!isOpen) return;
@@ -82,6 +96,23 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ isOpen, onClose 
 
     return () => unsubscribe();
   }, [isOpen]);
+
+  useEffect(() => {
+    if (!isOpen || activeTab !== 'settings') return;
+
+    const settingsRef = doc(db, 'settings', 'global');
+    const unsubscribe = onSnapshot(settingsRef, (snapshot) => {
+      if (snapshot.exists()) {
+        setSettings(snapshot.data() as AppSettings);
+      }
+      setIsLoadingSettings(false);
+    }, (err) => {
+      handleFirestoreError(err, OperationType.GET, 'settings/global');
+      setIsLoadingSettings(false);
+    });
+
+    return () => unsubscribe();
+  }, [isOpen, activeTab]);
 
   useEffect(() => {
     if (!isOpen || activeTab !== 'audit') return;
@@ -158,6 +189,29 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ isOpen, onClose 
       handleFirestoreError(err, OperationType.UPDATE, `users/${uid}`);
     } finally {
       setIsUpdatingRole(null);
+    }
+  };
+
+  const handleSaveSettings = async () => {
+    setIsSavingSettings(true);
+    try {
+      await setDoc(doc(db, 'settings', 'global'), { ...settings });
+      
+      // Log the action
+      if (auth.currentUser) {
+        await addDoc(collection(db, 'audit_logs'), {
+          action: 'UPDATE_SETTINGS',
+          adminId: auth.currentUser.uid,
+          adminEmail: auth.currentUser.email,
+          targetId: 'global_settings',
+          details: `Updated application settings: ${JSON.stringify(settings)}`,
+          timestamp: serverTimestamp()
+        });
+      }
+    } catch (err) {
+      handleFirestoreError(err, OperationType.UPDATE, 'settings/global');
+    } finally {
+      setIsSavingSettings(false);
     }
   };
 
@@ -388,49 +442,87 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ isOpen, onClose 
                   </div>
                 ) : (
                   <div className="p-8 max-w-2xl mx-auto w-full space-y-8">
-                    <div>
-                      <h3 className="text-lg font-bold mb-6 flex items-center gap-2">
-                        <Database className="w-5 h-5 text-blue-500" /> Application Settings
-                      </h3>
-                      
+                    {isLoadingSettings ? (
                       <div className="space-y-6">
-                        <div className="flex items-center justify-between p-4 bg-zinc-900/50 border border-zinc-800 rounded-2xl">
-                          <div>
-                            <h4 className="text-sm font-bold">Maintenance Mode</h4>
-                            <p className="text-xs text-zinc-500">Disable all client access temporarily</p>
-                          </div>
-                          <button className="w-12 h-6 bg-zinc-800 rounded-full relative p-1 transition-colors">
-                            <div className="w-4 h-4 bg-zinc-600 rounded-full" />
-                          </button>
-                        </div>
-
-                        <div className="flex items-center justify-between p-4 bg-zinc-900/50 border border-zinc-800 rounded-2xl">
-                          <div>
-                            <h4 className="text-sm font-bold">New User Registration</h4>
-                            <p className="text-xs text-zinc-500">Allow new users to sign up</p>
-                          </div>
-                          <button className="w-12 h-6 bg-blue-600 rounded-full relative p-1 transition-colors">
-                            <div className="w-4 h-4 bg-white rounded-full ml-auto" />
-                          </button>
-                        </div>
-
-                        <div className="flex items-center justify-between p-4 bg-zinc-900/50 border border-zinc-800 rounded-2xl">
-                          <div>
-                            <h4 className="text-sm font-bold">Debug Logging</h4>
-                            <p className="text-xs text-zinc-500">Enable verbose server-side logs</p>
-                          </div>
-                          <button className="w-12 h-6 bg-zinc-800 rounded-full relative p-1 transition-colors">
-                            <div className="w-4 h-4 bg-zinc-600 rounded-full" />
-                          </button>
-                        </div>
+                        {[1, 2, 3].map(i => (
+                          <div key={i} className="h-20 bg-zinc-900/50 rounded-2xl animate-pulse" />
+                        ))}
                       </div>
-                    </div>
+                    ) : (
+                      <>
+                        <div>
+                          <h3 className="text-lg font-bold mb-6 flex items-center gap-2">
+                            <Database className="w-5 h-5 text-blue-500" /> Application Settings
+                          </h3>
+                          
+                          <div className="space-y-6">
+                            <div className="flex items-center justify-between p-4 bg-zinc-900/50 border border-zinc-800 rounded-2xl">
+                              <div>
+                                <h4 className="text-sm font-bold">Maintenance Mode</h4>
+                                <p className="text-xs text-zinc-500">Disable all client access temporarily</p>
+                              </div>
+                              <button 
+                                onClick={() => setSettings(prev => ({ ...prev, maintenanceMode: !prev.maintenanceMode }))}
+                                className={`w-12 h-6 rounded-full relative p-1 transition-colors ${settings.maintenanceMode ? 'bg-blue-600' : 'bg-zinc-800'}`}
+                              >
+                                <motion.div 
+                                  animate={{ x: settings.maintenanceMode ? 24 : 0 }}
+                                  className="w-4 h-4 bg-white rounded-full shadow-sm" 
+                                />
+                              </button>
+                            </div>
 
-                    <div className="pt-6 border-t border-zinc-800">
-                      <button className="w-full py-4 bg-blue-600 hover:bg-blue-700 text-white rounded-2xl font-bold transition-all shadow-lg shadow-blue-600/20">
-                        Save Changes
-                      </button>
-                    </div>
+                            <div className="flex items-center justify-between p-4 bg-zinc-900/50 border border-zinc-800 rounded-2xl">
+                              <div>
+                                <h4 className="text-sm font-bold">New User Registration</h4>
+                                <p className="text-xs text-zinc-500">Allow new users to sign up</p>
+                              </div>
+                              <button 
+                                onClick={() => setSettings(prev => ({ ...prev, allowRegistration: !prev.allowRegistration }))}
+                                className={`w-12 h-6 rounded-full relative p-1 transition-colors ${settings.allowRegistration ? 'bg-blue-600' : 'bg-zinc-800'}`}
+                              >
+                                <motion.div 
+                                  animate={{ x: settings.allowRegistration ? 24 : 0 }}
+                                  className="w-4 h-4 bg-white rounded-full shadow-sm" 
+                                />
+                              </button>
+                            </div>
+
+                            <div className="flex items-center justify-between p-4 bg-zinc-900/50 border border-zinc-800 rounded-2xl">
+                              <div>
+                                <h4 className="text-sm font-bold">Debug Logging</h4>
+                                <p className="text-xs text-zinc-500">Enable verbose server-side logs</p>
+                              </div>
+                              <button 
+                                onClick={() => setSettings(prev => ({ ...prev, debugLogging: !prev.debugLogging }))}
+                                className={`w-12 h-6 rounded-full relative p-1 transition-colors ${settings.debugLogging ? 'bg-blue-600' : 'bg-zinc-800'}`}
+                              >
+                                <motion.div 
+                                  animate={{ x: settings.debugLogging ? 24 : 0 }}
+                                  className="w-4 h-4 bg-white rounded-full shadow-sm" 
+                                />
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="pt-6 border-t border-zinc-800">
+                          <button 
+                            onClick={handleSaveSettings}
+                            disabled={isSavingSettings}
+                            className="w-full py-4 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-600/50 text-white rounded-2xl font-bold transition-all shadow-lg shadow-blue-600/20 flex items-center justify-center gap-2"
+                          >
+                            {isSavingSettings ? (
+                              <>
+                                <RefreshCw className="w-4 h-4 animate-spin" /> Saving...
+                              </>
+                            ) : (
+                              'Save Changes'
+                            )}
+                          </button>
+                        </div>
+                      </>
+                    )}
                   </div>
                 )}
               </div>
