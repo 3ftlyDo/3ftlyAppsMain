@@ -3,14 +3,14 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect } from 'react';
+import * as React from 'react';
+import { useState, useEffect, ErrorInfo, ReactNode } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
   Layout, 
   Box, 
   Mail, 
   Github, 
-  Twitter, 
   ExternalLink, 
   ChevronRight, 
   Menu, 
@@ -23,12 +23,49 @@ import {
   Grid3X3,
   Search,
   HelpCircle,
-  User,
+  User as UserIcon,
   ArrowLeft,
   Share2,
   Download,
-  Info
+  Info,
+  LogOut,
+  LogIn,
+  Settings,
+  ShieldCheck,
+  MessageCircle
 } from 'lucide-react';
+import { ErrorBoundary } from './components/ErrorBoundary';
+import { AdminDashboard } from './components/AdminDashboard';
+import { 
+  auth, 
+  db, 
+  googleProvider, 
+  handleFirestoreError, 
+  OperationType 
+} from './firebase';
+import { 
+  signInWithPopup, 
+  signOut, 
+  onAuthStateChanged, 
+  User as FirebaseUser 
+} from 'firebase/auth';
+import { 
+  doc, 
+  getDoc, 
+  setDoc, 
+  onSnapshot, 
+  serverTimestamp, 
+  Timestamp 
+} from 'firebase/firestore';
+
+interface UserProfile {
+  uid: string;
+  displayName: string | null;
+  email: string | null;
+  photoURL: string | null;
+  role: 'admin' | 'client';
+  createdAt: Timestamp;
+}
 
 interface Artifact {
   id: string;
@@ -120,6 +157,8 @@ export default function App() {
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [isAppDrawerOpen, setIsAppDrawerOpen] = useState(false);
   const [isMobileSearchOpen, setIsMobileSearchOpen] = useState(false);
+  const [isProfileMenuOpen, setIsProfileMenuOpen] = useState(false);
+  const [isAdminDashboardOpen, setIsAdminDashboardOpen] = useState(false);
   const [selectedArtifact, setSelectedArtifact] = useState<Artifact | null>(null);
   const [activeSection, setActiveSection] = useState('home');
   const [isScrolled, setIsScrolled] = useState(false);
@@ -127,6 +166,90 @@ export default function App() {
   const [searchQuery, setSearchQuery] = useState('');
   const [isLoadingArtifacts, setIsLoadingArtifacts] = useState(true);
   const [isLoadingFaq, setIsLoadingFaq] = useState(true);
+  const [deferredPrompt, setDeferredPrompt] = useState<any>(null);
+  const [showInstallBanner, setShowInstallBanner] = useState(false);
+
+  useEffect(() => {
+    const handleBeforeInstallPrompt = (e: any) => {
+      e.preventDefault();
+      setDeferredPrompt(e);
+      setShowInstallBanner(true);
+    };
+
+    window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+
+    return () => {
+      window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+    };
+  }, []);
+
+  const handleInstallClick = async () => {
+    if (!deferredPrompt) return;
+    deferredPrompt.prompt();
+    const { outcome } = await deferredPrompt.userChoice;
+    if (outcome === 'accepted') {
+      setDeferredPrompt(null);
+      setShowInstallBanner(false);
+    }
+  };
+
+  // Auth & Profile State
+  const [user, setUser] = useState<FirebaseUser | null>(null);
+  const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
+  const [isAuthReady, setIsAuthReady] = useState(false);
+
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
+      setUser(currentUser);
+      setIsAuthReady(true);
+      if (!currentUser) {
+        setUserProfile(null);
+      }
+    });
+    return () => unsubscribe();
+  }, []);
+
+  useEffect(() => {
+    if (!user || !isAuthReady) return;
+
+    const userRef = doc(db, 'users', user.uid);
+    const unsubscribe = onSnapshot(userRef, (snapshot) => {
+      if (snapshot.exists()) {
+        setUserProfile(snapshot.data() as UserProfile);
+      } else {
+        // Create profile if it doesn't exist
+        const isAdminEmail = user.email === '3ftlyapps@gmail.com';
+        const newProfile: Partial<UserProfile> = {
+          uid: user.uid,
+          displayName: user.displayName,
+          email: user.email,
+          photoURL: user.photoURL,
+          role: isAdminEmail ? 'admin' : 'client',
+          createdAt: serverTimestamp() as Timestamp,
+        };
+        setDoc(userRef, newProfile).catch(err => handleFirestoreError(err, OperationType.CREATE, `users/${user.uid}`));
+      }
+    }, (err) => handleFirestoreError(err, OperationType.GET, `users/${user.uid}`));
+
+    return () => unsubscribe();
+  }, [user, isAuthReady]);
+
+  const handleSignIn = async () => {
+    try {
+      await signInWithPopup(auth, googleProvider);
+    } catch (error) {
+      console.error("Sign in error:", error);
+    }
+  };
+
+  const handleSignOut = async () => {
+    try {
+      await signOut(auth);
+      setIsProfileMenuOpen(false);
+    } catch (error) {
+      console.error("Sign out error:", error);
+    }
+  };
 
   const filteredArtifacts = ARTIFACTS.filter(artifact => {
     const query = searchQuery.toLowerCase();
@@ -185,7 +308,8 @@ export default function App() {
   };
 
   return (
-    <div className="min-h-screen bg-zinc-950 text-zinc-100 font-sans selection:bg-blue-500/30">
+    <ErrorBoundary>
+      <div className="min-h-screen bg-zinc-950 text-zinc-100 font-sans selection:bg-blue-500/30">
       {/* Navigation */}
       <nav className={`fixed top-0 left-0 right-0 z-50 transition-all duration-300 ${isScrolled ? 'bg-zinc-950/90 backdrop-blur-xl border-b border-zinc-800/50 py-3' : 'bg-transparent py-5'}`}>
         <div className="max-w-7xl mx-auto px-4 md:px-6 flex justify-between items-center">
@@ -259,9 +383,79 @@ export default function App() {
                 <DottedGrid className={`w-5 h-5 ${isAppDrawerOpen ? 'text-blue-500' : 'text-zinc-400'}`} />
               </button>
 
-              <button className="w-8 h-8 bg-zinc-800 rounded-full flex items-center justify-center text-zinc-400 hover:bg-zinc-700 transition-colors border border-zinc-700 ml-1">
-                <User className="w-4 h-4" />
-              </button>
+              <div className="relative">
+                <button 
+                  onClick={() => user ? setIsProfileMenuOpen(!isProfileMenuOpen) : handleSignIn()}
+                  className="w-8 h-8 bg-zinc-800 rounded-full flex items-center justify-center text-zinc-400 hover:bg-zinc-700 transition-colors border border-zinc-700 ml-1 overflow-hidden group"
+                >
+                  {user?.photoURL ? (
+                    <img src={user.photoURL} alt="Profile" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                  ) : (
+                    <UserIcon className="w-4 h-4 group-hover:text-white transition-colors" />
+                  )}
+                </button>
+
+                {/* Profile Dropdown */}
+                <AnimatePresence>
+                  {isProfileMenuOpen && user && (
+                    <>
+                      <div 
+                        className="fixed inset-0 z-[60]" 
+                        onClick={() => setIsProfileMenuOpen(false)} 
+                      />
+                      <motion.div
+                        initial={{ opacity: 0, scale: 0.95, y: 10 }}
+                        animate={{ opacity: 1, scale: 1, y: 0 }}
+                        exit={{ opacity: 0, scale: 0.95, y: 10 }}
+                        className="absolute right-0 mt-2 w-72 bg-zinc-900 border border-zinc-800 rounded-2xl shadow-2xl z-[70] overflow-hidden"
+                      >
+                        <div className="p-6 text-center border-b border-zinc-800">
+                          <div className="w-16 h-16 bg-zinc-800 rounded-full mx-auto mb-4 overflow-hidden border-2 border-zinc-700">
+                            {user.photoURL ? (
+                              <img src={user.photoURL} alt="Profile" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                            ) : (
+                              <UserIcon className="w-8 h-8 m-4 text-zinc-500" />
+                            )}
+                          </div>
+                          <h3 className="font-bold text-lg">{user.displayName || 'User'}</h3>
+                          <p className="text-xs text-zinc-500 mb-2">{user.email}</p>
+                          {userProfile?.role === 'admin' ? (
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-blue-500/10 text-blue-500 text-[10px] font-bold uppercase tracking-wider border border-blue-500/20">
+                              <ShieldCheck className="w-3 h-3" /> Admin
+                            </span>
+                          ) : (
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-zinc-800 text-zinc-400 text-[10px] font-bold uppercase tracking-wider border border-zinc-700">
+                              Client
+                            </span>
+                          )}
+                        </div>
+                        <div className="p-2">
+                          {userProfile?.role === 'admin' && (
+                            <button 
+                              onClick={() => {
+                                setIsAdminDashboardOpen(true);
+                                setIsProfileMenuOpen(false);
+                              }}
+                              className="w-full flex items-center gap-3 px-4 py-2.5 rounded-xl text-sm font-medium text-blue-400 hover:bg-blue-400/10 transition-all"
+                            >
+                              <Shield className="w-4 h-4" /> Admin Console
+                            </button>
+                          )}
+                          <button className="w-full flex items-center gap-3 px-4 py-2.5 rounded-xl text-sm font-medium text-zinc-400 hover:bg-zinc-800 hover:text-white transition-all">
+                            <Settings className="w-4 h-4" /> Manage Account
+                          </button>
+                          <button 
+                            onClick={handleSignOut}
+                            className="w-full flex items-center gap-3 px-4 py-2.5 rounded-xl text-sm font-medium text-red-400 hover:bg-red-400/10 transition-all"
+                          >
+                            <LogOut className="w-4 h-4" /> Sign Out
+                          </button>
+                        </div>
+                      </motion.div>
+                    </>
+                  )}
+                </AnimatePresence>
+              </div>
             </div>
           </div>
         </div>
@@ -385,7 +579,7 @@ export default function App() {
                 {[
                   { icon: <Mail className="w-6 h-6 text-zinc-500" />, title: "Mail" },
                   { icon: <Github className="w-6 h-6 text-zinc-500" />, title: "GitHub" },
-                  { icon: <Twitter className="w-6 h-6 text-zinc-500" />, title: "Twitter" },
+                  { icon: <MessageCircle className="w-6 h-6 text-zinc-500" />, title: "WhatsApp" },
                   { icon: <Layout className="w-6 h-6 text-zinc-500" />, title: "Drive" },
                   { icon: <Shield className="w-6 h-6 text-zinc-500" />, title: "Admin" }
                 ].map((mock, i) => (
@@ -715,16 +909,16 @@ export default function App() {
                     </div>
                     <div>
                       <p className="text-xs font-bold text-zinc-500 uppercase tracking-widest">Email</p>
-                      <p className="text-lg font-medium">hello@3ftly.com</p>
+                      <p className="text-lg font-medium">3ftlyapps@gmail.com</p>
                     </div>
                   </div>
                   <div className="flex items-center gap-4">
                     <div className="w-12 h-12 bg-zinc-900 rounded-2xl flex items-center justify-center border border-zinc-800">
-                      <Twitter className="w-5 h-5 text-blue-400" />
+                      <MessageCircle className="w-5 h-5 text-emerald-500" />
                     </div>
                     <div>
-                      <p className="text-xs font-bold text-zinc-500 uppercase tracking-widest">Twitter</p>
-                      <p className="text-lg font-medium">@3ftlyApps</p>
+                      <p className="text-xs font-bold text-zinc-500 uppercase tracking-widest">WhatsApp</p>
+                      <p className="text-lg font-medium">+263 787 873 734</p>
                     </div>
                   </div>
                 </div>
@@ -781,12 +975,54 @@ export default function App() {
           </div>
 
           <div className="flex items-center gap-6">
-            <a href="#" className="text-zinc-500 hover:text-white transition-colors"><Github className="w-5 h-5" /></a>
-            <a href="#" className="text-zinc-500 hover:text-white transition-colors"><Twitter className="w-5 h-5" /></a>
-            <a href="#" className="text-zinc-500 hover:text-white transition-colors"><Mail className="w-5 h-5" /></a>
+            <a href="https://github.com/3ftlyDo" target="_blank" rel="noopener noreferrer" className="text-zinc-500 hover:text-white transition-colors"><Github className="w-5 h-5" /></a>
+            <a href="https://wa.me/263787873734" target="_blank" rel="noopener noreferrer" className="text-zinc-500 hover:text-white transition-colors"><MessageCircle className="w-5 h-5" /></a>
+            <a href="mailto:3ftlyapps@gmail.com" className="text-zinc-500 hover:text-white transition-colors"><Mail className="w-5 h-5" /></a>
           </div>
         </div>
       </footer>
+
+      {/* PWA Install Banner */}
+      <AnimatePresence>
+        {showInstallBanner && (
+          <motion.div
+            initial={{ y: 100, opacity: 0 }}
+            animate={{ y: 0, opacity: 1 }}
+            exit={{ y: 100, opacity: 0 }}
+            className="fixed bottom-6 left-6 right-6 md:left-auto md:right-6 md:w-96 z-[120] bg-zinc-900 border border-zinc-800 rounded-2xl p-4 shadow-2xl flex items-center justify-between gap-4"
+          >
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 bg-blue-500/10 rounded-xl flex items-center justify-center border border-blue-500/20">
+                <Smartphone className="w-5 h-5 text-blue-500" />
+              </div>
+              <div>
+                <p className="text-sm font-bold">Install 3ftly Apps</p>
+                <p className="text-[10px] text-zinc-500">Add to your home screen for quick access</p>
+              </div>
+            </div>
+            <div className="flex items-center gap-2">
+              <button 
+                onClick={() => setShowInstallBanner(false)}
+                className="text-xs font-bold text-zinc-500 hover:text-white px-2 py-1 transition-colors"
+              >
+                Later
+              </button>
+              <button 
+                onClick={handleInstallClick}
+                className="bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold px-4 py-2 rounded-lg transition-all"
+              >
+                Install
+              </button>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      <AdminDashboard 
+        isOpen={isAdminDashboardOpen} 
+        onClose={() => setIsAdminDashboardOpen(false)} 
+      />
     </div>
+    </ErrorBoundary>
   );
 }
