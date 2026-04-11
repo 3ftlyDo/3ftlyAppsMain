@@ -78,6 +78,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ isOpen, onClose 
     allowRegistration: true,
     debugLogging: false
   });
+  const [prevSettings, setPrevSettings] = useState<AppSettings | null>(null);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -103,7 +104,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ isOpen, onClose 
     const settingsRef = doc(db, 'settings', 'global');
     const unsubscribe = onSnapshot(settingsRef, (snapshot) => {
       if (snapshot.exists()) {
-        setSettings(snapshot.data() as AppSettings);
+        const data = snapshot.data() as AppSettings;
+        setSettings(data);
+        setPrevSettings(data);
       }
       setIsLoadingSettings(false);
     }, (err) => {
@@ -197,6 +200,22 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ isOpen, onClose 
     try {
       await setDoc(doc(db, 'settings', 'global'), { ...settings });
       
+      // Calculate changes for audit log
+      const changes: string[] = [];
+      if (prevSettings) {
+        if (prevSettings.maintenanceMode !== settings.maintenanceMode) {
+          changes.push(`Maintenance Mode: ${prevSettings.maintenanceMode ? 'ON' : 'OFF'} → ${settings.maintenanceMode ? 'ON' : 'OFF'}`);
+        }
+        if (prevSettings.allowRegistration !== settings.allowRegistration) {
+          changes.push(`Registration: ${prevSettings.allowRegistration ? 'ENABLED' : 'DISABLED'} → ${settings.allowRegistration ? 'ENABLED' : 'DISABLED'}`);
+        }
+        if (prevSettings.debugLogging !== settings.debugLogging) {
+          changes.push(`Debug Logging: ${prevSettings.debugLogging ? 'ON' : 'OFF'} → ${settings.debugLogging ? 'ON' : 'OFF'}`);
+        }
+      } else {
+        changes.push('Initial settings configuration');
+      }
+
       // Log the action
       if (auth.currentUser) {
         await addDoc(collection(db, 'audit_logs'), {
@@ -204,10 +223,14 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ isOpen, onClose 
           adminId: auth.currentUser.uid,
           adminEmail: auth.currentUser.email,
           targetId: 'global_settings',
-          details: `Updated application settings: ${JSON.stringify(settings)}`,
+          details: changes.length > 0 
+            ? `Updated application settings: ${changes.join(', ')}`
+            : 'Saved settings (no changes)',
           timestamp: serverTimestamp()
         });
       }
+      
+      setPrevSettings({ ...settings });
     } catch (err) {
       handleFirestoreError(err, OperationType.UPDATE, 'settings/global');
     } finally {
